@@ -10,6 +10,7 @@ import (
 type State struct {
 	OldGateway string   `json:"old_gateway"`
 	RealIface  string   `json:"real_iface"`
+	OldDNS     []string `json:"old_dns,omitempty"`
 	VPSIPs     []string `json:"vps_ips"`
 	XrayPID    int      `json:"xray_pid"`
 	TunIfIndex int      `json:"tun_if_index,omitempty"`

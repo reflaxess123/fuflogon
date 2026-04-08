@@ -277,6 +277,56 @@ func FlushDNS() {
 	runHidden("ipconfig", "/flushdns")
 }
 
+// getCurrentDNS returns the IPv4 DNS servers currently configured on the
+// given network interface. Empty slice means "DHCP-assigned" and we should
+// reset back to DHCP on stop.
+func getCurrentDNS(iface string) ([]string, error) {
+	// Use PowerShell because netsh output is locale-dependent (русский на
+	// компе кореша). PowerShell returns clean dot-separated IPs.
+	out, err := powershell(fmt.Sprintf(
+		`(Get-DnsClientServerAddress -InterfaceAlias '%s' -AddressFamily IPv4 -ErrorAction SilentlyContinue).ServerAddresses -join ','`,
+		iface))
+	if err != nil {
+		return nil, err
+	}
+	out = strings.TrimSpace(out)
+	if out == "" {
+		return nil, nil
+	}
+	parts := strings.Split(out, ",")
+	for i := range parts {
+		parts[i] = strings.TrimSpace(parts[i])
+	}
+	return parts, nil
+}
+
+// setDNS forces the given network interface to use the given DNS servers.
+// Used during VPN start so that DNS queries don't leak to a censoring ISP
+// resolver — they go to 1.1.1.1 / 1.0.0.1 through the TUN.
+func setDNS(iface string, servers []string) error {
+	if len(servers) == 0 {
+		return nil
+	}
+	quoted := make([]string, len(servers))
+	for i, s := range servers {
+		quoted[i] = "'" + s + "'"
+	}
+	_, err := powershell(fmt.Sprintf(
+		`Set-DnsClientServerAddress -InterfaceAlias '%s' -ServerAddresses (%s)`,
+		iface, strings.Join(quoted, ",")))
+	return err
+}
+
+// resetDNS restores the given interface to DHCP-assigned DNS servers.
+// Called during VPN stop as the safest way to clean up regardless of what
+// the user originally had.
+func resetDNS(iface string) error {
+	_, err := powershell(fmt.Sprintf(
+		`Set-DnsClientServerAddress -InterfaceAlias '%s' -ResetServerAddresses`,
+		iface))
+	return err
+}
+
 // isProcessAlive is the Windows-specific implementation using tasklist.
 func isProcessAlive(pid int) bool {
 	out, err := runHidden("tasklist", "/FI", fmt.Sprintf("PID eq %d", pid), "/NH")
@@ -363,6 +413,16 @@ func Start(rootDir, cfgName string) error {
 	core.Logf("[INFO] xray pid: %d", pid)
 	os.WriteFile(filepath.Join(rootDir, core.PidFileName), []byte(fmt.Sprintf("%d", pid)), 0644)
 
+	// Sanity check: xray sometimes dies immediately on bad config (e.g.
+	// unsupported VLESS encryption mode). Without this check the launcher
+	// would happily continue, find the *previous* TUN adapter still in the
+	// system, and pretend everything is fine.
+	time.Sleep(1500 * time.Millisecond)
+	if !IsProcessRunning(pid) {
+		core.Logf("[ERROR] xray pid %d exited immediately after start", pid)
+		return fmt.Errorf("xray exited immediately after start — see Logs/xray-error.log for the underlying error (often: unsupported VLESS encryption / bad config)")
+	}
+
 	core.Logf("[INFO] waiting for %s adapter...", core.TunName)
 	tunIfIndex, err := WaitForTUN(15 * time.Second)
 	if err != nil {
@@ -384,9 +444,27 @@ func Start(rootDir, cfgName string) error {
 		}
 	}
 
+	// Save the user's current DNS so we can restore it on Stop, then force
+	// the real interface to use Cloudflare DNS through the tunnel. Without
+	// this, ISPs that DNS-block (e.g. youtube.com → "no such host") leak
+	// straight past the VPN because Windows resolves through the
+	// DHCP-supplied resolver before the packet even reaches the TUN.
+	oldDNS, err := getCurrentDNS(realIface)
+	if err != nil {
+		core.Logf("[WARN] get current DNS for %s: %v", realIface, err)
+	} else {
+		core.Logf("[INFO] saved current DNS for %s: %v", realIface, oldDNS)
+	}
+	if err := setDNS(realIface, []string{"1.1.1.1", "1.0.0.1"}); err != nil {
+		core.Logf("[WARN] set DNS to 1.1.1.1 on %s: %v", realIface, err)
+	} else {
+		core.Logf("[INFO] DNS for %s set to 1.1.1.1, 1.0.0.1", realIface)
+	}
+
 	st := core.State{
 		OldGateway: oldGw,
 		RealIface:  realIface,
+		OldDNS:     oldDNS,
 		VPSIPs:     vpsIPs,
 		XrayPID:    pid,
 		TunIfIndex: tunIfIndex,
@@ -467,7 +545,25 @@ func Stop(rootDir string) error {
 	}
 	StopExistingXray(rootDir)
 
-	// 5. Clean up temp files
+	// 5. Restore the user's original DNS on the real interface. If they had
+	//    custom servers — bring them back. If they were on DHCP — reset.
+	if st != nil && st.RealIface != "" {
+		if len(st.OldDNS) > 0 {
+			if err := setDNS(st.RealIface, st.OldDNS); err != nil {
+				core.Logf("[WARN] restore DNS for %s: %v", st.RealIface, err)
+			} else {
+				core.Logf("[INFO] restored DNS for %s: %v", st.RealIface, st.OldDNS)
+			}
+		} else {
+			if err := resetDNS(st.RealIface); err != nil {
+				core.Logf("[WARN] reset DNS for %s: %v", st.RealIface, err)
+			} else {
+				core.Logf("[INFO] reset DNS for %s to DHCP", st.RealIface)
+			}
+		}
+	}
+
+	// 6. Clean up temp files
 	if st != nil && st.RuntimeCfg != "" {
 		os.Remove(st.RuntimeCfg)
 	}
