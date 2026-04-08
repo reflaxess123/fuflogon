@@ -1,0 +1,135 @@
+{
+  "log": {
+    "loglevel": "none"
+  },
+
+  "dns": {
+    "servers": [
+      {
+        "address": "https://1.1.1.1/dns-query",
+        "domains": [
+          "geosite:ru-blocked",
+          "geosite:telegram"
+        ],
+        "skipFallback": true
+      },
+      "localhost"
+    ],
+    "queryStrategy": "UseIPv4",
+    "tag": "dns-in"
+  },
+
+  "inbounds": [
+    {
+      "tag": "tun-in",
+      "protocol": "tun",
+      "port": 0,
+      "settings": {
+        "name": "xray0",
+        "MTU": 1500
+      },
+      "sniffing": {
+        "enabled": true,
+        "destOverride": ["http", "tls", "quic"],
+        "metadataOnly": false,
+        "routeOnly": true
+      }
+    }
+  ],
+
+  "outbounds": [
+    {
+      "tag": "direct",
+      "protocol": "freedom",
+      "settings": {
+        "domainStrategy": "UseIPv4"
+      },
+      "streamSettings": {
+        "sockopt": {
+          "interface": "Ethernet"
+        }
+      }
+    },
+    {
+      "tag": "vless-pq",
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "89.124.92.244",
+            "port": 443,
+            "users": [
+              {
+                "id": "3bd41f74-dd7b-41d7-a4ed-5ed1a9bb6540",
+                "encryption": "none",
+                "flow": "xtls-rprx-vision"
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "reality",
+        "realitySettings": {
+          "show": false,
+          "fingerprint": "chrome",
+          "serverName": "www.google.com",
+          "publicKey": "-tFXGHgcVwpi0j7XQKWhNmeymHzLMYyA73oiljYyc1w",
+          "shortId": "a1b2c3d4e5f6a7b8"
+        },
+        "sockopt": {
+          "interface": "Ethernet"
+        }
+      }
+    },
+    {
+      "tag": "block",
+      "protocol": "blackhole"
+    },
+    {
+      "tag": "dns-out",
+      "protocol": "dns",
+      "streamSettings": {
+        "sockopt": {
+          "interface": "Ethernet"
+        }
+      }
+    }
+  ],
+
+  "routing": {
+    "domainStrategy": "IPIfNonMatch",
+    "rules": [
+      {
+        "type": "field",
+        "inboundTag": ["tun-in"],
+        "port": 53,
+        "network": "udp",
+        "outboundTag": "dns-out"
+      },
+      {
+        "type": "field",
+        "inboundTag": ["dns-in"],
+        "outboundTag": "vless-pq"
+      },
+
+      {
+        "type": "field",
+        "ip": ["geoip:private"],
+        "outboundTag": "direct"
+      },
+
+      {
+        "type": "field",
+        "domain": ["geosite:telegram", "geosite:ru-blocked"],
+        "outboundTag": "vless-pq"
+      },
+      {
+        "type": "field",
+        "ip": ["geoip:telegram", "geoip:ru-blocked"],
+        "outboundTag": "vless-pq"
+      }
+    ]
+  }
+}

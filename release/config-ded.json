@@ -1,0 +1,139 @@
+{
+  "log": {
+    "loglevel": "none"
+  },
+
+  "dns": {
+    "servers": [
+      {
+        "address": "https://1.1.1.1/dns-query",
+        "domains": [
+          "geosite:ru-blocked",
+          "geosite:telegram"
+        ],
+        "skipFallback": true
+      },
+      "localhost"
+    ],
+    "queryStrategy": "UseIPv4",
+    "tag": "dns-in"
+  },
+
+  "inbounds": [
+    {
+      "tag": "tun-in",
+      "protocol": "tun",
+      "port": 0,
+      "settings": {
+        "name": "xray0",
+        "MTU": 1500
+      },
+      "sniffing": {
+        "enabled": true,
+        "destOverride": ["http", "tls", "quic"],
+        "metadataOnly": false,
+        "routeOnly": true
+      }
+    }
+  ],
+
+  "outbounds": [
+    {
+      "tag": "direct",
+      "protocol": "freedom",
+      "settings": {
+        "domainStrategy": "UseIPv4"
+      },
+      "streamSettings": {
+        "sockopt": {
+          "interface": "Ethernet"
+        }
+      }
+    },
+    {
+      "tag": "vless-pq",
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "89.124.90.41",
+            "port": 47843,
+            "users": [
+              {
+                "id": "1a5c72b5-2eb6-493b-a363-3dc166f233fd",
+                "encryption": "mlkem768x25519plus.native.0rtt.WGY4kKYXVdUYd9wwSsNN5AV2-KV5SgCS24IA3li4vWXNPKPJu3W_5Oa8S0dCB8FqvMi6RcauWbRCX7i4D5qcaul8GBObA0itLpqgQca_DotqpRtUWYZBrloqL5Gx7Dlg6NtDFRqaNjlCvPyL3XTP8wE6H8ZeBFiqggp2moV0Q8QYaEqxeVAlYFXESly41TYz_diYg3gLZFgcjZgBzpaQaFQNl2Wif-O85gNvPgiIBImm7ImKSEq8L-meiiPEeUgSWteJbbrKwBOtxlKkNtSaveS7Dtm2WsV7rjWKunqpJmrKw5ZeLFyX8jI9SUxXY8EVXaGdGBKPClxsUNVdHOokuUGTK5mwsqa_l5K_RITIiTDEwqMU51hd23yVssow1JAICLyes-CU0bWOpBeuo7SFJkRIVNBYr6jBVFq5yjdeMcQD6pC10ABcDARKqbap26xe_ei9aeWSUuVbcgl2PuxBZLRROtgWvwk4M-FsUkxbygat22wXe4qE4scfgIJm_weJIhFIjPAAYjZlfgA5xRxcy2wkW5yE3dZYwhdJ5Zef01V_x8Fyr9xrTaAf9lUW4YR7euyTjux49fQAtiUsFGos9VoeOMYxumBtHzQIi5mjz5CC6lu2tklSQOjOwPJogpJndZMC8tNrWtOBOBrLLgAaaUWtsWUps2tJmyqcJJqcZmIsJta1VaFu0gQkDPACiLhM5IB7JalC9cEHj1VYyci9OzJk4BTNELYhwqJvO3cOedicUYtWW6xkq6Cq2_WqiaoUrSEDnEfFdEi9SPJhJSygHRBEKAUYTMKECNiIOwydV9wGcaEWj2ASSsMZoqSLifOIxJe_knRqnMCVlgwfXJKvuhBgOJVCo-WWbrWRxBez55GnyOWhG0UL61OI3Mm3u2EcIaid-iQBFAZ2pENp0MZ-i3mTzVw3snMPVnxC6NDD_DBW3orE5Gw7lHd8Z1OWgRNo6QwFHTJhzrZMm3dncgmeWEQ_zcZDzxiS55moHRxXTANsVSQatVl3RZeNaNEwgkSK4_Qm6wM8IvaVZBtYxQCDilSJoelNA-lYbMWiwPAblwcRQ9wLEXy65iMTEozMTkEw0Edj9Yc6k-uYueogYegTSIgpf2IhkcmYe0MnKcnDv6yLh9K9_hpDk1I-9usSFOa6yQKPq6mjwfimUUMt8QsuczdXKBGd6dPOCjc9iUFCT7GHf3suY2hrQIETyIqA5lsjB_wEGbV56uUks8lyI4bN5BscxAKk78phe4A5DREj-mCxqBmYhgKcFZweIVxdd6ZszWBKjUIBDSJoaAIWEIcJa5lEiyCfWfcxWiBVRhljsTjOYDtScaOKSukNWDmhPCF-1VMN8QJSBDh5xTlb64vHJ3cg3hY_aiNjpciGT5SoI5wxrtuxgvQAeuNRk4wjTcpSmJHCEoMlghyRDEeDX1fB_AQF4VAhUNuGP7c0WkBAlhB6fQxHyXJorbChzZl9GTx8-7VdqYCM5ixFoWSqDVIIIbFfmBLBhNduKsZfH5EUkZDL4cgv_5V0cLPE_IJLF0a2SUo3fYOHyH2ZT_L6OgzUrL894jDzYs407BZp7ZbwbnU"
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "xhttp",
+        "xhttpSettings": {
+          "host": "www.google.com",
+          "path": "/f5cf73a061ae",
+          "mode": "auto"
+        },
+        "security": "reality",
+        "realitySettings": {
+          "show": false,
+          "fingerprint": "chrome",
+          "serverName": "www.google.com",
+          "publicKey": "vLAZpP27Ex6IwakP49BJCsV6NNz8zKW0nMznH8HGPFo",
+          "shortId": "3ad93f3b4f637e50"
+        },
+        "sockopt": {
+          "interface": "Ethernet"
+        }
+      }
+    },
+    {
+      "tag": "block",
+      "protocol": "blackhole"
+    },
+    {
+      "tag": "dns-out",
+      "protocol": "dns",
+      "streamSettings": {
+        "sockopt": {
+          "interface": "Ethernet"
+        }
+      }
+    }
+  ],
+
+  "routing": {
+    "domainStrategy": "IPIfNonMatch",
+    "rules": [
+      {
+        "type": "field",
+        "inboundTag": ["tun-in"],
+        "port": 53,
+        "network": "udp",
+        "outboundTag": "dns-out"
+      },
+      {
+        "type": "field",
+        "inboundTag": ["dns-in"],
+        "outboundTag": "vless-pq"
+      },
+
+      {
+        "type": "field",
+        "ip": ["geoip:private"],
+        "outboundTag": "direct"
+      },
+
+      {
+        "type": "field",
+        "domain": ["geosite:telegram", "geosite:ru-blocked"],
+        "outboundTag": "vless-pq"
+      },
+      {
+        "type": "field",
+        "ip": ["geoip:telegram", "geoip:ru-blocked"],
+        "outboundTag": "vless-pq"
+      }
+    ]
+  }
+}
