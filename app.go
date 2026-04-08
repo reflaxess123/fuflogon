@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sync"
@@ -451,7 +452,14 @@ func (a *App) DownloadXray() {
 	}
 }
 
-// CheckConnectivity dials :443 on each service and updates the status arrays.
+// CheckConnectivity probes each service via HTTPS HEAD over IPv4 only.
+// We avoid raw TCP dial because:
+//  1. handshake success ≠ working site (TLS may still fail)
+//  2. plain net.Dial picks IPv6 first if AAAA exists — leaks past the TUN
+//  3. system DNS may stall through TUN — we use a custom HTTP client with
+//     a tcp4-only dialer + 8s total timeout
+//
+// Each probe is logged so the user can see exactly what failed.
 func (a *App) CheckConnectivity() {
 	a.mu.Lock()
 	if a.checking {
@@ -468,29 +476,69 @@ func (a *App) CheckConnectivity() {
 	a.mu.Unlock()
 	a.emit()
 
+	core.Logf("[CHECK] starting connectivity probe (%d ru + %d blocked)",
+		len(ruServices), len(blockedServices))
+
+	// Shared HTTP client: forces IPv4, 8s total timeout, no redirect follow
+	// (we only care that the host responded at all).
+	dialer := &net.Dialer{
+		Timeout:   6 * time.Second,
+		KeepAlive: 0,
+	}
+	client := &http.Client{
+		Timeout: 8 * time.Second,
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+				// Force IPv4 — bypass IPv6 leak past the TUN.
+				return dialer.DialContext(ctx, "tcp4", addr)
+			},
+			TLSHandshakeTimeout:   6 * time.Second,
+			ResponseHeaderTimeout: 6 * time.Second,
+			DisableKeepAlives:     true,
+			ForceAttemptHTTP2:     false,
+		},
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+
 	var wg sync.WaitGroup
-	check := func(host string, idx int, target *[]int) {
+	check := func(host string, idx int, target *[]int, kind string) {
 		defer wg.Done()
-		conn, err := net.DialTimeout("tcp", host+":443", 4*time.Second)
-		a.mu.Lock()
-		if err == nil {
-			conn.Close()
-			(*target)[idx] = 1
-		} else {
+		url := "https://" + host
+		req, _ := http.NewRequest(http.MethodHead, url, nil)
+		req.Header.Set("User-Agent", "Mozilla/5.0 fuflogon/connectivity-check")
+		start := time.Now()
+		resp, err := client.Do(req)
+		elapsed := time.Since(start)
+
+		if err != nil {
+			core.Logf("[CHECK] %-7s %-20s FAIL (%4dms) %v", kind, host, elapsed.Milliseconds(), err)
+			a.mu.Lock()
 			(*target)[idx] = 2
+			a.mu.Unlock()
+			return
 		}
+		resp.Body.Close()
+		// Any HTTP response counts as "reachable" — even 4xx/5xx mean the
+		// server is alive and responsive.
+		core.Logf("[CHECK] %-7s %-20s OK   (%4dms) status=%d", kind, host, elapsed.Milliseconds(), resp.StatusCode)
+		a.mu.Lock()
+		(*target)[idx] = 1
 		a.mu.Unlock()
 	}
 
 	for i, h := range ruServices {
 		wg.Add(1)
-		go check(h, i, &a.ruStatus)
+		go check(h, i, &a.ruStatus, "RU")
 	}
 	for i, h := range blockedServices {
 		wg.Add(1)
-		go check(h, i, &a.blockedStatus)
+		go check(h, i, &a.blockedStatus, "BLOCKED")
 	}
 	wg.Wait()
+
+	core.Logf("[CHECK] done")
 
 	a.mu.Lock()
 	a.checking = false

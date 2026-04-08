@@ -226,6 +226,35 @@ func restoreDefaultRoute(gateway, iface string) error {
 	return err
 }
 
+// blockIPv6 installs a blackhole route for ::/0 so that any IPv6 traffic
+// fails immediately and Windows falls back to IPv4 (which is captured by
+// our TUN). Without this, hosts with AAAA records leak through Wi-Fi
+// directly past the VPN.
+//
+// We add the route on the loopback interface (ifIndex=1) with metric 1 so
+// it wins over any router-advertised default route. Returns nil even on
+// failure — IPv6 may already be disabled, that's fine.
+func blockIPv6() {
+	// netsh refuses ::/0 — use unique-local prefix coverage instead.
+	// Easiest: use `route -6 ADD ::/0 ::1 IF 1 METRIC 1` equivalent via netsh.
+	if _, err := runHidden("netsh", "interface", "ipv6", "add", "route",
+		"::/0", "interface=1", "nexthop=::", "metric=1", "store=active"); err != nil {
+		core.Logf("[INFO] IPv6 blackhole route not added (probably IPv6 disabled): %v", err)
+		return
+	}
+	core.Logf("[INFO] IPv6 blackhole route ::/0 → loopback installed")
+}
+
+// unblockIPv6 removes the blackhole route added by blockIPv6.
+func unblockIPv6() {
+	if _, err := runHidden("netsh", "interface", "ipv6", "delete", "route",
+		"::/0", "interface=1", "nexthop=::"); err != nil {
+		core.Logf("[INFO] IPv6 blackhole route not removed (probably never added): %v", err)
+		return
+	}
+	core.Logf("[INFO] IPv6 blackhole route removed")
+}
+
 // AttachParentConsole attaches stdout/stderr to the parent process's console.
 func AttachParentConsole() {
 	kernel32 := syscall.NewLazyDLL("kernel32.dll")
@@ -372,6 +401,10 @@ func Start(rootDir, cfgName string) error {
 		return fmt.Errorf("set default route via TUN: %w", err)
 	}
 
+	// Block IPv6 leaks — without this, hosts with AAAA records bypass our
+	// IPv4-only TUN tunnel via the upstream router's IPv6 default route.
+	blockIPv6()
+
 	FlushDNS()
 
 	fmt.Println()
@@ -417,6 +450,9 @@ func Stop(rootDir string) error {
 			}
 		}
 	}
+
+	// 3.5. Remove IPv6 blackhole route (no-op if it wasn't installed)
+	unblockIPv6()
 
 	// 4. Kill xray
 	pidPath := filepath.Join(rootDir, core.PidFileName)

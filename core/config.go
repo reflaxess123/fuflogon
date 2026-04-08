@@ -59,12 +59,24 @@ func XrayCandidates() []string {
 	return []string{"xray"}
 }
 
-// ScanConfigs lists config*.json files in rootDir (excluding dot-files).
+// ScanConfigs lists every *.json file in rootDir that looks like an xray
+// config (skips dot-files, package.json, tsconfig*.json, wails.json — anything
+// that obviously isn't a tunnel config).
 func ScanConfigs(rootDir string) []string {
 	entries, err := os.ReadDir(rootDir)
 	if err != nil {
 		return nil
 	}
+
+	// Names that occasionally show up next to fuflogon.exe but are NOT xray
+	// configs. Lowercased for comparison.
+	skip := map[string]bool{
+		"package.json":      true,
+		"package-lock.json": true,
+		"tsconfig.json":     true,
+		"wails.json":        true,
+	}
+
 	var out []string
 	for _, e := range entries {
 		if e.IsDir() {
@@ -78,7 +90,7 @@ func ScanConfigs(rootDir string) []string {
 		if strings.HasPrefix(name, ".") {
 			continue
 		}
-		if !strings.HasPrefix(lower, "config") {
+		if skip[lower] {
 			continue
 		}
 		out = append(out, filepath.Join(rootDir, name))
