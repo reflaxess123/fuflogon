@@ -1,3 +1,9 @@
+# Release folder — binaries, configs, runtime files
+release/
+
+# Claude local settings
+.claude/settings.local.json
+
 release/xray.exe
 release/xray
 release/geoip.dat
