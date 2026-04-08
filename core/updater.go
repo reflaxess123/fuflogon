@@ -64,10 +64,13 @@ func directHTTPClient(timeout time.Duration) *http.Client {
 }
 
 // DownloadXray downloads the latest xray binary for the current platform
-// into rootDir. progress is called with status messages (may be nil).
-func DownloadXray(rootDir string, progress func(string)) error {
+// into rootDir. progress is called with byte-level progress (may be nil).
+//
+// CAUTION: this writes to xray.exe in-place. Caller MUST stop any running
+// xray process first, otherwise the write fails with sharing violation.
+func DownloadXray(rootDir string, progress ProgressFn) error {
 	if progress == nil {
-		progress = func(string) {}
+		progress = func(Progress) {}
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
@@ -76,7 +79,7 @@ func DownloadXray(rootDir string, progress func(string)) error {
 	client := directHTTPClient(5 * time.Minute)
 
 	// 1. Get latest release info
-	progress("Fetching release info...")
+	progress(Progress{Active: true, Stage: "Fetching xray release info", Step: 1, StepCount: 3})
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, xrayGitHubAPI, nil)
 	req.Header.Set("User-Agent", "fuflogon-launcher/1.0")
 	resp, err := client.Do(req)
@@ -112,9 +115,7 @@ func DownloadXray(rootDir string, progress func(string)) error {
 		return fmt.Errorf("asset %q not found in release %s", assetName, release.TagName)
 	}
 
-	progress(fmt.Sprintf("Downloading xray %s...", release.TagName))
-
-	// 3. Download zip
+	// 3. Download zip with byte-level progress
 	req2, _ := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
 	req2.Header.Set("User-Agent", "fuflogon-launcher/1.0")
 	resp2, err := client.Do(req2)
@@ -126,12 +127,15 @@ func DownloadXray(rootDir string, progress func(string)) error {
 		return fmt.Errorf("download zip: HTTP %d", resp2.StatusCode)
 	}
 
-	zipData, err := io.ReadAll(resp2.Body)
+	pr := newProgressReader(resp2.Body, resp2.ContentLength,
+		fmt.Sprintf("Downloading xray %s", release.TagName), assetName,
+		2, 3, progress)
+	zipData, err := io.ReadAll(pr)
 	if err != nil {
 		return fmt.Errorf("read zip: %w", err)
 	}
 
-	progress("Extracting...")
+	progress(Progress{Active: true, Stage: "Extracting xray", File: assetName, Step: 3, StepCount: 3})
 
 	// 4. Extract binary from zip
 	zr, err := zip.NewReader(bytes.NewReader(zipData), int64(len(zipData)))
@@ -159,13 +163,16 @@ func DownloadXray(rootDir string, progress func(string)) error {
 		return fmt.Errorf("%s not found in zip", binName)
 	}
 
-	// 5. Write to rootDir
+	// 5. Write to rootDir. On Windows, if a process holds the file, this fails
+	// with sharing violation — so we try removing it first.
 	outPath := filepath.Join(rootDir, binName)
+	if FileExists(outPath) {
+		_ = os.Remove(outPath)
+	}
 	if err := os.WriteFile(outPath, binData, 0755); err != nil {
 		return fmt.Errorf("write %s: %w", outPath, err)
 	}
 
-	progress(fmt.Sprintf("xray %s installed at %s", release.TagName, outPath))
 	Logf("[UPDATE] xray %s downloaded (%d bytes)", release.TagName, len(binData))
 	return nil
 }

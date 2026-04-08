@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -94,6 +95,195 @@ func PickDefaultConfig(list []string) string {
 		}
 	}
 	return list[0]
+}
+
+// OutboundInfo describes one outbound block from the xray config.
+type OutboundInfo struct {
+	Tag      string `json:"tag"`
+	Protocol string `json:"protocol"`
+	Address  string `json:"address,omitempty"`
+	Port     int    `json:"port,omitempty"`
+	Network  string `json:"network,omitempty"`
+	Security string `json:"security,omitempty"`
+}
+
+// RoutingRule is one entry from routing.rules in the config. All fields are
+// kept as strings/[]string for the UI; the parser tolerates port as either
+// number or string in the source JSON.
+type RoutingRule struct {
+	OutboundTag string   `json:"outboundTag"`
+	Type        string   `json:"type"`
+	Domain      []string `json:"domain,omitempty"`
+	IP          []string `json:"ip,omitempty"`
+	Port        string   `json:"port,omitempty"`
+	Network     string   `json:"network,omitempty"`
+	Source      []string `json:"source,omitempty"`
+	Protocol    []string `json:"protocol,omitempty"`
+	InboundTag  []string `json:"inboundTag,omitempty"`
+}
+
+// ConfigInfo is the parsed view of an xray config — used by the UI.
+type ConfigInfo struct {
+	Outbounds []OutboundInfo `json:"outbounds"`
+	Rules     []RoutingRule  `json:"rules"`
+	// Default is the outbound xray will use if no routing rule matches.
+	// Per xray docs this is the FIRST outbound in the array.
+	Default string `json:"default"`
+	// Primary is the most "interesting" proxy outbound — used by the UI to
+	// highlight the active VPN tunnel. Falls back to Default if none found.
+	Primary string `json:"primary"`
+}
+
+// asString converts an arbitrary JSON value to a string. Numbers become their
+// decimal representation, strings stay as is, anything else becomes "".
+func asString(v interface{}) string {
+	switch x := v.(type) {
+	case string:
+		return x
+	case float64:
+		if x == float64(int64(x)) {
+			return strconv.FormatInt(int64(x), 10)
+		}
+		return strconv.FormatFloat(x, 'f', -1, 64)
+	case bool:
+		return strconv.FormatBool(x)
+	}
+	return ""
+}
+
+// asStringSlice accepts a JSON array of strings, a single string, or anything
+// else. Returns nil if no usable strings are found.
+func asStringSlice(v interface{}) []string {
+	switch x := v.(type) {
+	case []interface{}:
+		out := make([]string, 0, len(x))
+		for _, item := range x {
+			if s := asString(item); s != "" {
+				out = append(out, s)
+			}
+		}
+		return out
+	case string:
+		if x == "" {
+			return nil
+		}
+		return []string{x}
+	}
+	return nil
+}
+
+// ParseConfigInfo reads and parses a config file into a UI-friendly view.
+// The parser is intentionally lenient: it tolerates fields with unexpected
+// types (e.g. port as number vs string) by going through map[string]interface{}.
+func ParseConfigInfo(cfgPath string) (*ConfigInfo, error) {
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		return nil, err
+	}
+	var raw map[string]interface{}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, fmt.Errorf("parse config: %w", err)
+	}
+
+	info := &ConfigInfo{
+		Outbounds: []OutboundInfo{},
+		Rules:     []RoutingRule{},
+	}
+
+	// --- outbounds ---
+	if obs, ok := raw["outbounds"].([]interface{}); ok {
+		for _, item := range obs {
+			ob, ok := item.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			info.Outbounds = append(info.Outbounds, parseOutbound(ob))
+		}
+	}
+
+	// --- routing.rules ---
+	if routing, ok := raw["routing"].(map[string]interface{}); ok {
+		if rules, ok := routing["rules"].([]interface{}); ok {
+			for _, item := range rules {
+				r, ok := item.(map[string]interface{})
+				if !ok {
+					continue
+				}
+				info.Rules = append(info.Rules, parseRule(r))
+			}
+		}
+	}
+
+	// Default outbound: per xray docs, the first outbound in the array is the
+	// fallback for traffic that no rule matches.
+	if len(info.Outbounds) > 0 {
+		info.Default = info.Outbounds[0].Tag
+	}
+
+	// Primary outbound: first non-direct/non-block proxy outbound, used by the
+	// UI to highlight the active VPN tunnel.
+	for _, o := range info.Outbounds {
+		if o.Tag != "" && o.Tag != "direct" && o.Tag != "block" &&
+			o.Protocol != "freedom" && o.Protocol != "blackhole" && o.Protocol != "dns" {
+			info.Primary = o.Tag
+			break
+		}
+	}
+	if info.Primary == "" {
+		info.Primary = info.Default
+	}
+
+	Logf("[INFO] parsed config: %d outbounds, %d rules, default=%q primary=%q",
+		len(info.Outbounds), len(info.Rules), info.Default, info.Primary)
+
+	return info, nil
+}
+
+func parseOutbound(o map[string]interface{}) OutboundInfo {
+	ob := OutboundInfo{
+		Tag:      asString(o["tag"]),
+		Protocol: asString(o["protocol"]),
+	}
+	if ss, ok := o["streamSettings"].(map[string]interface{}); ok {
+		ob.Network = asString(ss["network"])
+		ob.Security = asString(ss["security"])
+	}
+	if settings, ok := o["settings"].(map[string]interface{}); ok {
+		// vnext (vless/vmess) or servers (shadowsocks/trojan)
+		extract := func(arr interface{}) {
+			items, ok := arr.([]interface{})
+			if !ok || len(items) == 0 {
+				return
+			}
+			first, ok := items[0].(map[string]interface{})
+			if !ok {
+				return
+			}
+			ob.Address = asString(first["address"])
+			if p, ok := first["port"].(float64); ok {
+				ob.Port = int(p)
+			}
+		}
+		extract(settings["vnext"])
+		if ob.Address == "" {
+			extract(settings["servers"])
+		}
+	}
+	return ob
+}
+
+func parseRule(r map[string]interface{}) RoutingRule {
+	return RoutingRule{
+		OutboundTag: asString(r["outboundTag"]),
+		Type:        asString(r["type"]),
+		Domain:      asStringSlice(r["domain"]),
+		IP:          asStringSlice(r["ip"]),
+		Port:        asString(r["port"]),
+		Network:     asString(r["network"]),
+		Source:      asStringSlice(r["source"]),
+		Protocol:    asStringSlice(r["protocol"]),
+		InboundTag:  asStringSlice(r["inboundTag"]),
+	}
 }
 
 // ExtractServerIPs parses a config file and returns all outbound server IPv4 addresses.

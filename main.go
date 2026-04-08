@@ -1,34 +1,76 @@
 package main
 
 import (
+	"embed"
 	"fmt"
 	"os"
 
 	"github.com/reflaxess123/fuflogon/core"
 	"github.com/reflaxess123/fuflogon/platform"
-	"github.com/reflaxess123/fuflogon/tray"
+	"github.com/wailsapp/wails/v2"
+	"github.com/wailsapp/wails/v2/pkg/options"
+	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
+	"github.com/wailsapp/wails/v2/pkg/options/windows"
 )
+
+//go:embed all:frontend/dist
+var assets embed.FS
 
 func main() {
 	defer core.RecoverPanic("main")
-	defer core.CloseLog()
 
+	// CLI mode (e.g. `fuflogon stop`) — bypass GUI
 	if len(os.Args) >= 2 {
-		platform.AttachParentConsole()
-	}
-
-	rootDir := core.GetRootDir()
-	core.InitLog(rootDir)
-	core.Logf("=== fuflogon start: args=%v ===", os.Args)
-
-	if len(os.Args) < 2 {
-		tray.RunTray()
+		runCLI()
 		return
 	}
 
-	cmd := os.Args[1]
-	core.Logf("rootDir=%s cmd=%s", rootDir, cmd)
+	// Ensure admin before launching GUI on Windows
+	if !platform.EnsureAdmin() {
+		_ = platform.RelaunchAsAdmin()
+		return
+	}
 
+	app := NewApp()
+
+	// Start tray icon in background goroutine; it will request showing the
+	// Wails window via runtime callbacks once Wails has initialized.
+	go runTray(app)
+
+	err := wails.Run(&options.App{
+		Title:         "Fuflogon",
+		Width:         460,
+		Height:        820,
+		DisableResize: true,
+		Frameless:     true,
+		AssetServer: &assetserver.Options{
+			Assets: assets,
+		},
+		BackgroundColour: &options.RGBA{R: 9, G: 14, B: 25, A: 1},
+		OnStartup:        app.startup,
+		OnShutdown:       app.shutdown,
+		HideWindowOnClose: true,
+		Bind: []interface{}{
+			app,
+		},
+		Windows: &windows.Options{
+			WebviewIsTransparent: true,
+			WindowIsTranslucent:  true,
+			BackdropType:         windows.Mica,
+		},
+	})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Error:", err.Error())
+		os.Exit(1)
+	}
+}
+
+func runCLI() {
+	rootDir := core.GetRootDir()
+	core.InitLog(rootDir)
+	defer core.CloseLog()
+
+	cmd := os.Args[1]
 	switch cmd {
 	case "start":
 		cfgName := core.DefaultCfgName
@@ -36,51 +78,49 @@ func main() {
 			cfgName = os.Args[2]
 		}
 		if err := platform.Start(rootDir, cfgName); err != nil {
-			core.Logf("[ERROR] start: %v", err)
-			tray.ShowError(fmt.Sprintf("start failed:\n%v\n\nSee Logs/xray-launcher.log for details.", err))
+			fmt.Fprintln(os.Stderr, "start failed:", err)
 			os.Exit(1)
 		}
 	case "stop":
 		if err := platform.Stop(rootDir); err != nil {
-			core.Logf("[ERROR] stop: %v", err)
-			tray.ShowError(fmt.Sprintf("stop failed:\n%v", err))
+			fmt.Fprintln(os.Stderr, "stop failed:", err)
 			os.Exit(1)
 		}
 	case "status":
 		platform.Status(rootDir)
 	case "update-geo":
-		if err := core.UpdateGeo(rootDir); err != nil {
-			core.Logf("[ERROR] update geo: %v", err)
-			tray.ShowError(fmt.Sprintf("update geo failed:\n%v", err))
+		if err := core.UpdateGeo(rootDir, cliProgress); err != nil {
+			fmt.Fprintln(os.Stderr, "update geo failed:", err)
 			os.Exit(1)
 		}
 	case "download-xray":
-		if err := core.DownloadXray(rootDir, func(s string) { fmt.Println(s) }); err != nil {
-			core.Logf("[ERROR] download xray: %v", err)
+		if err := core.DownloadXray(rootDir, cliProgress); err != nil {
 			fmt.Fprintln(os.Stderr, "download xray failed:", err)
 			os.Exit(1)
 		}
-	case "help", "-h", "--help":
-		usage()
 	default:
-		fmt.Fprintf(os.Stderr, "unknown command: %s\n\n", cmd)
-		usage()
-		os.Exit(2)
+		fmt.Println(`fuflogon — VPN launcher
+
+Usage:
+  fuflogon                          GUI mode
+  fuflogon start [config.json]      start VPN
+  fuflogon stop                     stop VPN
+  fuflogon status                   show status
+  fuflogon update-geo               update geoip.dat / geosite.dat
+  fuflogon download-xray            download latest xray binary`)
 	}
 }
 
-func usage() {
-	fmt.Print(`fuflogon — Windows VPN launcher for xray-core
-
-Usage:
-  fuflogon                          — tray mode (Windows)
-  fuflogon start [config.json]      — start VPN
-  fuflogon stop                     — stop VPN
-  fuflogon status                   — show status
-  fuflogon update-geo               — update geoip.dat / geosite.dat
-  fuflogon download-xray            — download latest xray binary
-
-All runtime files should be in the same directory as the executable.
-Admin rights required on Windows.
-`)
+// cliProgress prints byte-level progress to stdout in CLI mode.
+func cliProgress(p core.Progress) {
+	if p.Total > 0 {
+		pct := float64(p.Downloaded) * 100 / float64(p.Total)
+		fmt.Printf("\r%s: %s — %.1f%% (%d/%d)",
+			p.Stage, p.File, pct, p.Downloaded, p.Total)
+	} else {
+		fmt.Printf("\r%s: %s — %d bytes", p.Stage, p.File, p.Downloaded)
+	}
+	if p.Total > 0 && p.Downloaded >= p.Total {
+		fmt.Println()
+	}
 }

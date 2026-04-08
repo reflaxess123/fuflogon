@@ -4,6 +4,23 @@ release/
 # Claude local settings
 .claude/settings.local.json
 
+# Frontend dependencies
+frontend/node_modules/
+frontend/dist/
+!frontend/dist/.gitkeep
+frontend/tsconfig.tsbuildinfo
+frontend/package.json.md5
+
+# Wails build artifacts
+build/bin/
+
+# Wails-generated bindings (regenerated on build)
+frontend/wailsjs/
+
+# Node logs
+*.log
+npm-debug.log*
+
 release/xray.exe
 release/xray
 release/geoip.dat
